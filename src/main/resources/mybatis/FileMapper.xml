@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.example.demo.mapper.FileMapper">
+
+    <insert id="save" parameterType="com.example.demo.entity.UploadFile"
+            useGeneratedKeys="true" keyProperty="id">
+        insert into upfiletest values (id,#{name},#{MD5},#{path},#{uploadDate})
+    </insert>
+
+    <select id="isMd5Exist" parameterType="String" resultType="String">
+        select name from upfiletest where md5=#{md5}
+    </select>
+</mapper>
