@@ -19,7 +19,7 @@ public class MergeFile {
      * @param uploadFolderPath
      * @throws Exception
      */
-    public static void mergeFile(final int chunksNumber,
+    public static String mergeFile(final int chunksNumber,
                                  @NotNull final String ext,
                                  @NotNull final String guid,
                                  @NotNull final String uploadFolderPath,
@@ -41,6 +41,6 @@ public class MergeFile {
 
         //删除保存分块文件的文件夹
         deleteFolder(mergePath);
-
+        return uploadFolderPath+name;
     }
 }

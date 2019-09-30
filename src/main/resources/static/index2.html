@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>webuploaderDemo</title>
+<script src="staticresource/js/jquery-3.2.1.min.js"></script>
+<link rel="stylesheet" href="staticresource/layui/css/layui.css">
+<link rel="stylesheet" href="staticresource/webuploader/upload.media.css">
+<link rel="stylesheet" href="staticresource/css/style.css">
+<script src="staticresource/layui/layui.all.js"></script>
+<script src="staticresource/webuploader/webuploader.js"></script>
+<style type="text/css">
+
+
+.upload-table{
+    padding: 2px 12px;
+}
+
+.fileQueue{
+	height: 300px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background-color: #f8f8f8;
+    width: 100%;
+}
+.hiden{
+	display: none
+}
+</style>
+
+<script type="text/javascript">
+var base = "${pageContext.request.contextPath}";
+var element;
+var layer;
+var index=0;
+var batchWebUpload;
+var fileAllNum=0;
+var fileAllSize=0;
+var successNum=0;
+var successSize=0;
+var  percentages = {}; // 所有文件的进度信息，key为file id
+$(function(){
+	layui.use(['layer','element','code'], function(){
+		  element = layui.element;
+		  layer = layui.layer;
+		  layui.code({
+			  elem: 'pre', //默认值为.layui-code
+			  encode: true, //是否转义html标签。默认不开启
+			  about: false
+		});
+		  layer.ready(function(){
+			  showWindow()
+		  });
+	});
+
+	var fileCheckUrl="/file/checkFile";//检测文件是否存在url
+	var checkChunkUrl="/file/checkChunk";//检测分片url
+	var mergeChunksUrl="/file/mergeChunks";//合并文件请求地址
+	
+	//监控文件上传的三个时间点(注意：该段代码必须放在WebUploader.create之前)
+    //时间点1：:所有分块进行上传之前（1.可以计算文件的唯一标记;2.可以判断是否秒传）   
+    //时间点2： 如果分块上传，每个分块上传之前（1.询问后台该分块是否已经保存成功，用于断点续传）
+    //时间点3：所有分块上传成功之后（1.通知后台进行分块文件的合并工作）
+    WebUploader.Uploader.register({
+        "before-send-file":"beforeSendFile",
+        "before-send":"beforeSend",
+        "after-send-file":"afterSendFile"
+    },{
+        //时间点1：:所有分块进行上传之前调用此函数
+    	//时间点1：:所有分块进行上传之前调用此函数
+        beforeSendFile:function(file){//利用md5File（）方法计算文件的唯一标记符
+        			 //创建一个deffered
+            var deferred = WebUploader.Deferred();
+            //1.计算文件的唯一标记，用于断点续传和秒传,获取文件前2m的md5值，越小越快，防止碰撞，把文件名文件大小和md5拼接作为文件唯一标识
+            (new WebUploader.Uploader()).md5File(file,0,2*1024*1024).progress(function(percentage){
+                //(new WebUploader.Uploader()).md5File(file).progress(function(percentage){
+
+            	
+            }).then(function(val){
+                    fileMd5 = file.size+"-"+val+"-"+file.name;//防止碰撞，把文件名文件大小和md5拼接作为文件唯一标识
+                    file.fileMd5=fileMd5;
+                    //2.请求后台是否保存过该文件，如果存在，则跳过该文件，实现秒传功能
+                    $.ajax({
+                        type:"POST",
+                        url:fileCheckUrl,
+                        data:{
+                            fileMd5:fileMd5//文件唯一标记
+                        },
+                        dataType:"json",
+                        success:function(response){
+                        	console.log(response);
+                            if(response.success){
+                            	console.log($("#"+file.id).find('.percent').html());
+                            	$("#"+file.id).find('.percent').html("100%");
+                            	$("#"+file.id).find(".layui-progress-bar").removeClass('layui-bg-blue');
+                            	element.progress('progress_'+file.id, '100%');
+                            	batchWebUpload.skipFile(file);
+                            	successNum++;
+                            	successSize+=file.size;
+                                //如果存在，则跳过该文件，秒传成功
+                                deferred.reject();
+                                
+                            }else{
+                                //继续上传
+                                deferred.resolve();
+                                
+                            }
+                        }
+                        }
+                    );
+
+                });
+            //返回deffered
+            return deferred.promise();
+        },
+      //时间点2：如果有分块上传，则 每个分块上传之前调用此函数
+        //block:代表当前分块对象
+       beforeSend:function(block){//向后台发送当前文件的唯一标记，用于后台创建保存分块文件的目录
+    	 //1.请求后台是否保存过当前分块，如果存在，则跳过该分块文件，实现断点续传功能
+           var deferred = WebUploader.Deferred();
+           //请求后台是否保存完成该文件信息，如果保存过，则跳过，如果没有，则发送该分块内容
+           $.ajax({
+               type:"POST",
+               url:checkChunkUrl,
+               data:{
+                   //文件唯一标记,敲黑板划重点了，不要用file.fileMd5，不然服务器上的文件会出错
+                   fileMd5: block.file.fileMd5,
+                   //当前分块下标
+                   chunk:block.chunk,
+                   //当前分块大小
+                   chunkSize:block.end-block.start
+               },
+               dataType:"json",
+               success:function(response){
+                   if(response.success){
+                	   //分块存在，跳过该分块
+                       deferred.reject();
+                    
+                   }else{
+                	   //分块不存在或者不完整，重新发送该分块内容
+                       deferred.resolve();
+                   }
+               }
+               }
+           );
+           //携带当前文件的唯一标记到后台，用于让后台创建保存该文件分块的目录
+          // this.owner.options.formData.fileMd5 = block.file.fileMd5;
+           return deferred.promise(); 
+       },
+       //时间点3：所有分块上传成功之后调用此函数
+       afterSendFile:function(file){//前台通知后台合并文件
+    	   //1.如果分块上传，则通过后台合并所有分块文件
+         	 //请求后台合并文件
+             $.ajax({
+                 type:"POST",
+                 url:mergeChunksUrl,
+                 data:{
+                     //文件唯一标记
+                     fileMd5:file.fileMd5,
+                     //文件名称
+                     fileName:file.name
+                 },
+                 dataType:"json",
+                 success:function(response){
+              	    console.log("合并分片完成");
+              		console.log(response);
+              		$("#"+file.id).find(".layui-progress-bar").removeClass('layui-bg-blue');
+                	element.progress('progress_'+file.id, '100%');
+                	$("#"+file.id).find('.percent').html("100%");
+                    $("#"+file.id).find(".status").text("已上传");
+                    $("#pause_Btn_"+file.id).fadeOut("slow");
+                    $("#continue_Btn_"+file.id).fadeOut("slow");
+                	successNum++;
+                	successSize+=file.size;
+                 }
+             });
+       }
+    });	
+	
+var batchWebUpload_btn = $("#batchWebUpload");
+
+batchWebUpload = WebUploader.create({ 
+	auto:false,
+    pick: {
+        id: batchWebUpload_btn,//指定选择文件的按钮容器，不指定则不创建按钮。注意 这里虽然写的是 id, 不仅支持 id, 还支持 class, 或者 dom 节点。
+        //label : title, 官方建议采用 innerHTML 代替
+        //innerHTML : title,
+        multiple :true //开启文件多选
+    },
+    swf:'staticresource/webuploader/Uploader.swf',//ie9一下会自动使用flash上传
+   /** accept:{//不验证文件类型了
+    	title: '不验证了',//字符串类型，文字描述
+        extensions: '*',//允许的文件后缀，不带点，多个用逗号分割。
+        mimeTypes: 'application/*,'//多个用逗号分割,怎么不知道咋写的，参考w3c  MIME 参考手册,传送门 http://www.w3school.com.cn/media/media_mimeref.asp
+    },**/
+    server: "/file/uploadChunks",
+    //压缩图片，如果图片尺寸超过设置的尺寸，会自动压缩图片，必要时会裁剪
+    compress:{
+		width: 600,
+		height: 600,
+		// 图片质量，只有type为`image/jpeg`的时候才有效。
+		quality: 90,
+		// 是否允许放大，如果想要生成小图的时候不失真，此选项应该设置为false.
+		allowMagnify: false,
+		// 是否允许裁剪
+		crop: false,
+		// 是否保留头部meta信息。
+		preserveHeaders: true,
+		// 如果发现压缩后文件大小比原来还大，则使用原来图片
+		// 此属性可能会影响图片自动纠正功能
+		noCompressIfLarger: false
+    },
+	// 单位字节，如果图片大小小于此值，不会采用压缩。512k  512*1024，如果设置为0，原图尺寸大于设置的尺寸就会压缩；如果大于0，只有在原图尺寸大于设置的尺寸，并且图片大小大于此值，才会压缩
+	compressSize: 0,
+	fileNumLimit : 10,//验证文件总数量, 超出则不允许加入队列,默认值：undefined,如果不配置，则不限制数量
+	fileSizeLimit : 5000*1024*1024*1024, //1kb=1024*1024,1G验证文件总大小是否超出限制, 超出则不允许加入队列。
+	fileSingleSizeLimit :1000*1024*1024*1024, //验证单个文件大小是否超出限制, 超出则不允许加入队列。
+	chunked:true,//是否开启分片上传
+	threads:10,//同时上传线程数
+	chunkSize:2*1024*1024,//如果要分片，每一片的文件大小
+    prepareNextFile:false//在上传当前文件时，准备好下一个文件,请设置成false，不然开启文件多选你浏览器会卡死
+});
+//当文件上传成功时触发。file {File} File对象, response {Object}服务端返回的数据
+batchWebUpload.on('uploadSuccess',function(file,response){
+	layer.msg("上传完成，服务端返回信息请按F12,看控制台：");
+	console.log(file);
+	if(response.success){
+		console.log(response);
+	}
+})
+//错误类型。文件验证不通过时触发
+//错误类型说明：Q_EXCEED_NUM_LIMIT 上传文件超过限制的数量
+//Q_EXCEED_SIZE_LIMIT文件总大小超出限制
+//Q_TYPE_DENIED 当文件类型不对
+batchWebUpload.on("error",function(type,file){
+	console.log(type);
+	if (type=="Q_TYPE_DENIED"){
+	    layer.msg("只能上传gif,jpg,jpeg,bmp,png格式文件");
+    }else if(type=="Q_EXCEED_SIZE_LIMIT"){
+    	layer.msg("所有的文件大小总和不能超过10M");
+    }else if(type=='F_EXCEED_SIZE'){
+    	layer.msg("单个文件大小不能超过1M");
+    }else if(type=='Q_EXCEED_NUM_LIMIT'){
+    	layer.msg(typeName+"最多只能上传10个");
+    }else if(type=='F_DUPLICATE'){
+    	layer.msg(file.name+"已经在上传队列，请勿重复上传");
+    }else{
+    	layer.msg("上传出错");
+    }
+}) 
+
+
+//文件加入队列
+batchWebUpload.on("fileQueued",function(file){
+	fileAllNum++;
+	fileAllSize+=file.size;
+	
+	
+	var fileSize = (file.size/1024/1024.0).toFixed(2)+"M";
+	var progress = '<div class="layui-progress " lay-filter="progress_'+file.id
+		+'" lay-showPercent="yes" ><div class="layui-progress-bar layui-bg-blue" lay-percent="0"></div></div>';
+	var buttons = '<a id="pause_Btn_'+file.id+'" fileId="' + file.id + '" class="layui-btn layui-btn-xs  layui-btn-primary">暂停</a>';
+	buttons+='<a id="continue_Btn_'+file.id+'" fileId="' + file.id + '" class="layui-btn layui-btn-xs  layui-btn-primary">开始</a>';
+	buttons+='<a id="delete_Btn_'+file.id+'" fileId="' + file.id + '" class="layui-btn layui-btn-xs  layui-btn-primary">删除</a>';
+	var htm = '<tr id="'+file.id+
+	'"><td>'+file.name+
+	'</td> <td>'+file.ext+ 
+	'</td><td>'+fileSize+
+	'</td><td>'+progress+  '</td><td class="percent">0%</td><td class="status">等待上传</td><td>'+buttons+'</td></tr>';
+	$("#fileList").append(htm);
+	//绑定事件
+	$("#pause_Btn_"+file.id).bind('click',function(){
+	    console.log($(this).attr("fileId")+" : "+file.id+" : "+batchWebUpload.isInProgress(file));
+		batchWebUpload.stop( true );
+        $("#"+file.id).find(".status").text("已暂停");
+        console.log("已暂停");
+    })
+	
+	$("#continue_Btn_"+file.id).bind('click',function(){
+        console.log($(this).attr("fileId")+" : "+file.id);
+		batchWebUpload.upload(file,true);
+        $("#"+file.id).find(".status").text("连接中...");
+        console.log("连接中...");
+	})
+	
+	$("#delete_Btn_"+file.id).bind('click',function(){
+		batchWebUpload.removeFile(batchWebUpload.getFile($(this).attr("fileId")), true );//从文件队列移除
+        $(this).parent().parent().fadeOut();//视觉上消失了
+        $(this).parent().parent().remove();//DOM上删除了
+	})
+
+    //添加队列后，检查文件的状态
+	percentages[ file.id ] = [ file.size, 0 ];
+	file.on('statuschange', function( cur, prev ) {
+		
+		// 成功
+		if ( cur === 'error' || cur === 'invalid' ) {
+			percentages[ file.id ][ 1 ] = 1;
+		}  else if ( cur === 'queued' ) {
+			percentages[ file.id ][ 1 ] = 0;
+		} 
+	})
+	$("#"+file.id).find('.percent').html("0%");
+	
+	element.progress('progress_'+file.id, '0%');
+});
+
+/**从文件队列移除**/
+batchWebUpload.on('fileDequeued', function( file ) {
+	fileAllNum--;
+	fileAllSize-=file.size;
+	delete percentages[ file.id ];
+});
+/**上传之前**/
+batchWebUpload.on('uploadBeforeSend', function( block, data, headers ) {
+	data.fileMd5 = block.file.fileMd5;
+	//block.file.chunks = block.chunks;//当前文件总分片数量
+	data.chunks = block.file.chunks;
+});
+
+
+/**上传过程中触发，携带上传进度**/
+batchWebUpload.on('uploadProgress',function(file ,percentage){
+    //获取当前<显示>进度百分比
+    var showPercentage= $("#"+file.id).find('.percent').text();
+    //转换为数字
+    //console.log(nowPercentage);
+    showPercentage=showPercentage.replace("%","");
+    //获取当前<实际>进度百分比
+    var percent=(percentage*100).toFixed(2);
+    //如果发生了进度条回退
+    if (Number(percent)<Number(showPercentage)){
+        //console.log("回退,实际%"+percentage+"  显示%"+nowPercentage)
+        $("#"+file.id).find(".status").text("连接中...");
+        console.log("连接中...");
+        return false;
+    }
+	element.progress('progress_'+file.id, percent+"%");//设置进度条百分比
+	
+	if(JSON.stringify(percentages) != "{}"){
+	    percentages[ file.id ][ 1 ] = percentage;
+	}
+	if(percentage==1){
+		percentages[ file.id ][ 1 ] = 1;
+	}
+	$("#"+file.id).find(".status").text("正在上传");
+    console.log("正在上传");
+	$("#"+file.id).find('.percent').html(percent);
+})
+
+ batchWebUpload.on( 'all', function( type ,file) {
+	 updateTotalProgress();
+	 
+	 switch( type ) {
+	 case 'uploadComplete':
+			parentId = file.id;
+			percentages[ file.id ][ 1 ] = 1;
+
+         break;
+     case 'uploadFinished':
+         break;
+
+     case 'uploadProgress':
+         break;
+     case 'uploadStart':
+         break;
+
+     case 'stopUpload':
+         break;
+
+ }
+ })
+})
+
+/**左下角弹出框**/
+function showWindow(){
+	if(index!=0){
+		try{
+			layer.restore(index);
+		}catch(err){
+			//console.log("弹出层已经打开");
+			return index;
+		}
+		return index;
+		
+	}
+	
+	//iframe窗
+	index=layer.open({
+	  type: 1,
+	  title:  ['上传队列', 'font-size:14px;'],
+	  closeBtn: 0, //不显示关闭按钮
+	  shade: false,
+	  area: ['700px', '400px'],
+	  offset: 'rb', //右下角弹出
+	  anim: 2,
+	  maxmin :true,
+	  content: $("#fileListDom"), //iframe的url，no代表不显示滚动条
+	});
+	return index;
+}
+
+
+function startAll(file){
+	batchWebUpload.upload(file);
+}
+
+function stopUpload(file){
+	if(file==undefined){
+		batchWebUpload.stop();
+	}else{
+		batchWebUpload.stop(file);
+	}
+}
+
+function cancelFile(file){
+	batchWebUpload.cancelFile(file);
+}
+
+
+/**设置总百分比**/
+function updateTotalProgress() {
+	
+	
+	var fize = (fileAllSize/1024/1024.0).toFixed(2);
+	var sSize = (successSize/1024/1024.0).toFixed(2);
+	
+	$("#fileQueueNum").text(fileAllNum)
+	$("#fileQueueSize").text(fize);
+    var loaded = 0;
+    var total = 0;
+   
+    var percent = 0;;
+
+    $.each( percentages, function( k, v ) {
+        total += v[ 0 ];
+        loaded += v[ 0 ] * v[ 1 ];
+    } );
+    percent = total ? loaded / total : 0;
+    $("#successNum").text(successNum);
+    $("#successSize").text(sSize);
+    var show_pe= Math.round( percent * 100 ) + '%';
+    element.progress('sumProgress', show_pe);
+    $("#sumPercent").text(show_pe);
+}
+</script>
+</head>
+<body>
+
+<a class="layui-btn layui-btn-danger layui-btn-sm" id="batchWebUpload">
+  <i class="layui-icon">&#xe857;</i>划重点，多选，分片批量上传+断点续传
+</a>
+
+</body>
+
+<div id="fileListDom" class="upload-table" style="display: none">
+<a class="layui-btn layui-btn-danger layui-btn-sm" id="startAll" onclick="startAll()">
+全部开始
+</a>
+<a class="layui-btn layui-btn-danger layui-btn-sm" id="stopAll" onclick="stopUpload()">
+全部暂停
+</a>
+<table class="layui-table" lay-size="sm">
+ <colgroup>
+    <col width="200">
+    <col width="150">
+    <col width="150">
+    <col width="350">
+    <col width="150">
+    <col width="200">
+    <col width="500">
+    <col>
+  </colgroup>
+  <thead>
+    <tr>
+      <th>文件名</th>
+      <th>文件类型</th>
+      <th>文件大小</th>
+      <th>进度</th>
+      <th>百分比</th>
+      <th>状态</th>
+      <th>操作</th>
+    </tr> 
+ </thead>
+  <tbody id="fileList" class="fileQueue">
+  
+  </tbody>
+  <tfoot id="fileInfo">
+  	<tr>
+  		<td colspan="4">
+  			<span>选中<span id="fileQueueNum">0</span>个文件，共<span id="fileQueueSize">0</span>M。</span><br>
+  			<span>上传成功<span id="successNum">0</span>个文件，共<span id="successSize">0</span>M。</span>
+  		</td>
+  		<td >
+  			<span id="sumPercent"></span>
+  			
+  		</td>
+  		<td colspan="2">
+	  		<div class="layui-progress" lay-showPercent="yes" lay-filter="sumProgress">
+			  <div class="layui-progress-bar" lay-percent="0%" id="sumProgress_bar" ></div>
+			</div>
+  		</td>
+  	</tr>
+  </tfoot>
+</table>
+
+</div>
+</html>

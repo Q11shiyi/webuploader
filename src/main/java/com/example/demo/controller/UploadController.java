@@ -5,9 +5,12 @@ import com.example.demo.util.MergeFile;
 import com.example.demo.util.SaveFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -88,7 +91,7 @@ public class UploadController extends SaveFile {
                 // 将文件分块保存到临时文件夹里，便于之后的合并文件
                 saveFile(mergePath, fileName, file);
                 // 验证所有分块是否上传成功，成功的话进行合并
-                Uploaded(name,md5value, guid, chunk, chunks, uploadFolderPath, fileName, ext, fileService);
+                //Uploaded(name,md5value, guid, chunk, chunks, uploadFolderPath, fileName, ext, fileService);
             } else {
                // fileName = guid + ext;
                 //上传文件没有分块的话就直接保存
@@ -106,14 +109,30 @@ public class UploadController extends SaveFile {
     @RequestMapping(value = "MergeFile")
     @ResponseBody
     public String mergeFile(String guid,
-                            String md5value,
-                            String chunks,
-                            String name) throws Exception {
+                            String chunkSize,
+                            String fileSize,
+                            String fileMd5,
+                            String name){
         String ext = name.substring(name.lastIndexOf("."));
         //获取上传的文件存放位置
         String uploadFolderPath = getRealPath();
-        MergeFile.mergeFile(Integer.parseInt(chunks),ext,guid,uploadFolderPath,name);
-        return null;
+        String path;
+        String md5;
+        //向上取整 取出分片总数量
+        int chunks= (int) Math.ceil(Double.parseDouble(fileSize)/Double.parseDouble(chunkSize));
+        if (chunks==1){
+            return "true";
+        }
+        try {
+            path = MergeFile.mergeFile(chunks, ext, guid, uploadFolderPath, name);
+            md5=DigestUtils.md5DigestAsHex(new FileInputStream(path));
+        }catch (Exception e){
+            return "error";
+        }
+        if (!fileMd5.equals(md5)){
+            return "error";
+        }
+        return "true";
     }
 
 }
